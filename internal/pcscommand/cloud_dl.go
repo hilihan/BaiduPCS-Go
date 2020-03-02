@@ -2,20 +2,24 @@ package pcscommand
 
 import (
 	"fmt"
+	"github.com/iikira/BaiduPCS-Go/baidupcs"
 )
 
 // RunCloudDlAddTask 执行添加离线下载任务
 func RunCloudDlAddTask(sourceURLs []string, savePath string) {
-	var err error
-	savePath, err = getAbsPath(savePath)
+	var (
+		err error
+		pcs = GetBaiduPCS()
+	)
+	err = matchPathByShellPatternOnce(&savePath)
 	if err != nil {
-		fmt.Printf("%s\n", err)
+		fmt.Println(err)
 		return
 	}
 
 	var taskid int64
 	for k := range sourceURLs {
-		taskid, err = GetBaiduPCS().CloudDlAddTask(sourceURLs[k], savePath+"/")
+		taskid, err = pcs.CloudDlAddTask(sourceURLs[k], savePath+baidupcs.PathSeparator)
 		if err != nil {
 			fmt.Printf("[%d] %s, 地址: %s\n", k+1, err, sourceURLs[k])
 			continue
@@ -71,4 +75,16 @@ func RunCloudDlDeleteTask(taskIDs []int64) {
 
 		fmt.Printf("[%d] 删除成功\n", id)
 	}
+}
+
+// RunCloudDlClearTask 清空离线下载任务记录
+func RunCloudDlClearTask() {
+	total, err := GetBaiduPCS().CloudDlClearTask()
+	if err != nil {
+		fmt.Printf("%s\n", err)
+		return
+	}
+
+	fmt.Printf("%s成功, 共清除 %d 条记录\n", baidupcs.OperationCloudDlClearTask, total)
+	return
 }

@@ -2,87 +2,40 @@ package downloader
 
 import (
 	"errors"
+	"github.com/golang/protobuf/proto"
+	"github.com/iikira/BaiduPCS-Go/pcsutil/cachepool"
 	"github.com/iikira/BaiduPCS-Go/pcsverbose"
+	"github.com/iikira/BaiduPCS-Go/requester/transfer"
 	"github.com/json-iterator/go"
 	"os"
 	"sync"
 )
 
-//InstanceState 状态, 断点续传信息
-type InstanceState struct {
-	saveFile *os.File
-	buf      []byte
-	ii       *instanceInfo
-	mu       sync.Mutex
-}
-
-type rangeInfo struct {
-	Begin int64 `json:"begin"`
-	End   int64 `json:"end"`
-}
-
-//InstanceInfo 状态详细信息, 用于导出状态文件
-type InstanceInfo struct {
-	DlStatus *DownloadStatus
-	Ranges   RangeList
-}
-
-type instanceInfo struct {
-	TotalSize int64        `json:"total_size"` // 总大小
-	Ranges    []*rangeInfo `json:"ranges"`
-}
-
-func (ii *instanceInfo) Convert() (eii *InstanceInfo) {
-	eii = &InstanceInfo{}
-	eii.Ranges = make([]*Range, 0, len(ii.Ranges))
-	for k := range ii.Ranges {
-		if ii.Ranges[k] == nil {
-			continue
-		}
-
-		eii.Ranges = append(eii.Ranges, &Range{
-			Begin: ii.Ranges[k].Begin,
-			End:   ii.Ranges[k].End,
-		})
+type (
+	//InstanceState 状态, 断点续传信息
+	InstanceState struct {
+		saveFile *os.File
+		format   InstanceStateStorageFormat
+		ii       transfer.DownloadInstanceInfoExporter
+		mu       sync.Mutex
 	}
 
-	downloaded := ii.TotalSize - eii.Ranges.Len()
-	eii.DlStatus = &DownloadStatus{
-		totalSize:        ii.TotalSize,
-		downloaded:       downloaded,
-		speedsDownloaded: downloaded,
-		oldDownloaded:    downloaded,
-	}
-	return eii
-}
+	// InstanceStateStorageFormat 断点续传储存类型
+	InstanceStateStorageFormat int
+)
 
-func (ii *instanceInfo) Render(eii *InstanceInfo) {
-	if eii == nil {
-		return
-	}
-	if eii.DlStatus != nil {
-		ii.TotalSize = eii.DlStatus.TotalSize()
-	}
-	if eii.Ranges != nil {
-		ii.Ranges = make([]*rangeInfo, 0, len(eii.Ranges))
-		for k := range eii.Ranges {
-			if eii.Ranges[k] == nil {
-				continue
-			}
-
-			ii.Ranges = append(ii.Ranges, &rangeInfo{
-				Begin: eii.Ranges[k].LoadBegin(),
-				End:   eii.Ranges[k].LoadEnd(),
-			})
-		}
-	}
-}
+const (
+	// InstanceStateStorageFormatJSON json 格式
+	InstanceStateStorageFormatJSON = iota
+	// InstanceStateStorageFormatProto3 protobuf 格式
+	InstanceStateStorageFormatProto3
+)
 
 //NewInstanceState 初始化InstanceState
-func NewInstanceState(saveFile *os.File) *InstanceState {
+func NewInstanceState(saveFile *os.File, format InstanceStateStorageFormat) *InstanceState {
 	return &InstanceState{
 		saveFile: saveFile,
-		ii:       &instanceInfo{},
+		format:   format,
 	}
 }
 
@@ -106,21 +59,14 @@ func (is *InstanceState) getSaveFileContents() []byte {
 	}
 	intSize := int(size)
 
-	if is.buf != nil {
-		is.buf = make([]byte, intSize)
-	}
+	buf := cachepool.RawMallocByteSlice(intSize)
 
-	capacity := len(is.buf)
-	if intSize > capacity {
-		is.buf = append(is.buf, make([]byte, intSize-capacity)...)
-	}
-
-	n, _ := is.saveFile.ReadAt(is.buf, 0)
-	return is.buf[:n]
+	n, _ := is.saveFile.ReadAt(buf, 0)
+	return buf[:n]
 }
 
 //Get 拉取信息
-func (is *InstanceState) Get() (eii *InstanceInfo) {
+func (is *InstanceState) Get() (eii *transfer.DownloadInstanceInfo) {
 	if !is.checkSaveFile() {
 		return nil
 	}
@@ -128,49 +74,64 @@ func (is *InstanceState) Get() (eii *InstanceInfo) {
 	is.mu.Lock()
 	defer is.mu.Unlock()
 
-	if is.ii == nil {
-		is.ii = &instanceInfo{}
-	}
-
 	contents := is.getSaveFileContents()
 	if len(contents) <= 0 {
 		return
 	}
 
-	err := jsoniter.Unmarshal(contents, is.ii)
+	is.ii = &transfer.DownloadInstanceInfoExport{}
+	var err error
+	switch is.format {
+	case InstanceStateStorageFormatProto3:
+		err = proto.Unmarshal(contents, is.ii.(*transfer.DownloadInstanceInfoExport))
+	default:
+		err = jsoniter.Unmarshal(contents, is.ii)
+	}
+
 	if err != nil {
-		pcsverbose.Verbosef("DEBUG: unmarshal json error: %s\n", err)
+		pcsverbose.Verbosef("DEBUG: InstanceInfo unmarshal error: %s\n", err)
 		return
 	}
 
-	eii = is.ii.Convert()
+	eii = is.ii.GetInstanceInfo()
 	return
 }
 
 //Put 提交信息
-func (is *InstanceState) Put(eii *InstanceInfo) {
+func (is *InstanceState) Put(eii *transfer.DownloadInstanceInfo) {
 	if !is.checkSaveFile() {
-		return
-	}
-
-	if is.ii == nil { // 忽略
 		return
 	}
 
 	is.mu.Lock()
 	defer is.mu.Unlock()
 
-	var err error
-
-	is.ii.Render(eii)
-	is.buf, err = jsoniter.Marshal(is.ii)
+	if is.ii == nil {
+		is.ii = &transfer.DownloadInstanceInfoExport{}
+	}
+	is.ii.SetInstanceInfo(eii)
+	var (
+		data []byte
+		err  error
+	)
+	switch is.format {
+	case InstanceStateStorageFormatProto3:
+		data, err = proto.Marshal(is.ii.(*transfer.DownloadInstanceInfoExport))
+	default:
+		data, err = jsoniter.Marshal(is.ii)
+	}
 	if err != nil {
 		panic(err)
 	}
 
-	_, err = is.saveFile.WriteAt(is.buf, 0)
+	err = is.saveFile.Truncate(int64(len(data)))
 	if err != nil {
-		pcsverbose.Verbosef("DEBUG: write json error: %s\n", err)
+		pcsverbose.Verbosef("DEBUG: truncate file error: %s\n", err)
+	}
+
+	_, err = is.saveFile.WriteAt(data, 0)
+	if err != nil {
+		pcsverbose.Verbosef("DEBUG: write instance state error: %s\n", err)
 	}
 }
 
@@ -183,7 +144,7 @@ func (is *InstanceState) Close() error {
 	return is.saveFile.Close()
 }
 
-func (der *Downloader) initInstanceState() (err error) {
+func (der *Downloader) initInstanceState(format InstanceStateStorageFormat) (err error) {
 	if der.instanceState != nil {
 		return errors.New("already initInstanceState")
 	}
@@ -196,7 +157,7 @@ func (der *Downloader) initInstanceState() (err error) {
 		}
 	}
 
-	der.instanceState = NewInstanceState(saveFile)
+	der.instanceState = NewInstanceState(saveFile, format)
 	return nil
 }
 

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"github.com/iikira/BaiduPCS-Go/baidupcs"
 	"github.com/iikira/BaiduPCS-Go/pcstable"
+	"github.com/iikira/BaiduPCS-Go/pcsutil/converter"
 	"github.com/iikira/baidu-tools/tieba"
 	"github.com/olekukonko/tablewriter"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,27 +42,32 @@ type Baidu struct {
 
 // BaiduPCS 初始化*baidupcs.BaiduPCS
 func (baidu *Baidu) BaiduPCS() *baidupcs.BaiduPCS {
-	pcs := baidupcs.NewPCS(Config.appID, baidu.BDUSS)
-	pcs.SetHTTPS(Config.enableHTTPS)
-	pcs.SetUserAgent(Config.userAgent)
+	pcs := baidupcs.NewPCS(Config.AppID, baidu.BDUSS)
+	pcs.SetStoken(baidu.STOKEN)
+	pcs.SetHTTPS(Config.EnableHTTPS)
+	pcs.SetPCSUserAgent(Config.PCSUA)
+	pcs.SetPanUserAgent(Config.PanUA)
+	pcs.SetUID(baidu.UID)
 	return pcs
 }
 
-// GetSavePath 根据提供的网盘文件路径 path, 返回本地储存路径,
+// GetSavePath 根据提供的网盘文件路径 pcspath, 返回本地储存路径,
 // 返回绝对路径, 获取绝对路径出错时才返回相对路径...
-func (baidu *Baidu) GetSavePath(path string) string {
-	dirStr := fmt.Sprintf("%s/%d_%s%s/.",
-		Config.saveDir,
-		baidu.UID,
-		baidu.Name,
-		path,
-	)
-
+func (baidu *Baidu) GetSavePath(pcspath string) string {
+	dirStr := filepath.Join(Config.SaveDir, fmt.Sprintf("%d_%s", baidu.UID, converter.TrimPathInvalidChars(baidu.Name)), pcspath)
 	dir, err := filepath.Abs(dirStr)
 	if err != nil {
 		dir = filepath.Clean(dirStr)
 	}
 	return dir
+}
+
+// PathJoin 合并工作目录和相对路径p, 若p为绝对路径则忽略
+func (baidu *Baidu) PathJoin(p string) string {
+	if path.IsAbs(p) {
+		return p
+	}
+	return path.Join(baidu.Workdir, p)
 }
 
 // BaiduUserList 百度帐号列表
@@ -80,7 +87,7 @@ func NewUserInfoByBDUSS(bduss string) (b *Baidu, err error) {
 		},
 		Sex:     t.Baidu.Sex,
 		Age:     t.Baidu.Age,
-		BDUSS:   t.Baidu.Auth.BDUSS,
+		BDUSS:   bduss,
 		Workdir: "/",
 	}
 	return b, nil

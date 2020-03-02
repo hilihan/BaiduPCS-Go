@@ -108,8 +108,13 @@ func (h *HTTPClient) Req(method string, urlStr string, post interface{}, header 
 	}
 
 	if header != nil {
+		// 处理Host
+		if host, ok := header["Host"]; ok {
+			req.Host = host
+		}
+
 		for key := range header {
-			req.Header.Add(key, header[key])
+			req.Header.Set(key, header[key])
 		}
 	}
 

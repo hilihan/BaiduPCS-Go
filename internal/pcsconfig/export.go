@@ -3,26 +3,15 @@ package pcsconfig
 import (
 	"fmt"
 	"github.com/iikira/BaiduPCS-Go/baidupcs"
+	"github.com/iikira/BaiduPCS-Go/baidupcs/dlinkclient"
 	"github.com/iikira/BaiduPCS-Go/pcstable"
+	"github.com/iikira/BaiduPCS-Go/pcsutil/converter"
+	"github.com/iikira/BaiduPCS-Go/requester"
 	"github.com/olekukonko/tablewriter"
 	"os"
 	"strconv"
+	"time"
 )
-
-// pcsConfigJSONExport 导出配置详情, 用于生成json数据
-type pcsConfigJSONExport struct {
-	BaiduActiveUID uint64        `json:"baidu_active_uid"`
-	BaiduUserList  BaiduUserList `json:"baidu_user_list"`
-
-	AppID int `json:"appid"` // appid
-
-	CacheSize   int `json:"cache_size"`   // 下载缓存
-	MaxParallel int `json:"max_parallel"` // 最大下载并发量
-
-	UserAgent   string `json:"user_agent"`   // 浏览器标识
-	SaveDir     string `json:"savedir"`      // 下载储存路径
-	EnableHTTPS bool   `json:"enable_https"` // 启用https
-}
 
 // ActiveUser 获取当前登录的用户
 func (c *PCSConfig) ActiveUser() *Baidu {
@@ -40,58 +29,71 @@ func (c *PCSConfig) ActiveUserBaiduPCS() *baidupcs.BaiduPCS {
 	return c.pcs
 }
 
-// BaiduUserList 获取百度用户列表
-func (c *PCSConfig) BaiduUserList() BaiduUserList {
-	return c.baiduUserList
+func (c *PCSConfig) httpClientWithUA(ua string) *requester.HTTPClient {
+	client := requester.NewHTTPClient()
+	client.SetHTTPSecure(c.EnableHTTPS)
+	client.SetUserAgent(ua)
+	return client
+}
+
+// HTTPClient 返回设置好的 HTTPClient
+func (c *PCSConfig) HTTPClient() *requester.HTTPClient {
+	return c.httpClientWithUA(c.UserAgent)
+}
+
+// PCSHTTPClient 返回设置好的 PCS HTTPClient
+func (c *PCSConfig) PCSHTTPClient() *requester.HTTPClient {
+	return c.httpClientWithUA(c.PCSUA)
+}
+
+// PanHTTPClient 返回设置好的 Pan HTTPClient
+func (c *PCSConfig) PanHTTPClient() *requester.HTTPClient {
+	return c.httpClientWithUA(c.PanUA)
+}
+
+// DlinkClient 返回设置好的DlinkClient
+func (c *PCSConfig) DlinkClient() *dlinkclient.DlinkClient {
+	if c.dc == nil {
+		dc := dlinkclient.NewDlinkClient()
+		client := c.PanHTTPClient()
+		client.SetResponseHeaderTimeout(30 * time.Second)
+		dc.SetClient(client)
+		c.dc = dc
+	}
+	return c.dc
 }
 
 // NumLogins 获取登录的用户数量
 func (c *PCSConfig) NumLogins() int {
-	return len(c.baiduUserList)
+	return len(c.BaiduUserList)
 }
 
-// AppID 返回app_id
-func (c *PCSConfig) AppID() int {
-	return c.appID
-}
-
-// CacheSize 返回cache_size, 下载缓存
-func (c *PCSConfig) CacheSize() int {
-	return c.cacheSize
-}
-
-// MaxParallel 返回max_parallel, 下载最大并发量
-func (c *PCSConfig) MaxParallel() int {
-	return c.maxParallel
-}
-
-// UserAgent 返回User-Agent
-func (c *PCSConfig) UserAgent() string {
-	return c.userAgent
-}
-
-// SaveDir 返回下载保存路径
-func (c *PCSConfig) SaveDir() string {
-	return c.saveDir
-}
-
-// EnableHTTPS 返回是否启用https
-func (c *PCSConfig) EnableHTTPS() bool {
-	return c.enableHTTPS
+// AverageParallel 返回平均的下载最大并发量
+func (c *PCSConfig) AverageParallel() int {
+	return AverageParallel(c.MaxParallel, c.MaxDownloadLoad)
 }
 
 // PrintTable 输出表格
 func (c *PCSConfig) PrintTable() {
 	tb := pcstable.NewTable(os.Stdout)
 	tb.SetHeader([]string{"名称", "值", "建议值", "描述"})
-	tb.SetColumnAlignment([]int{tablewriter.ALIGN_DEFAULT, tablewriter.ALIGN_LEFT, tablewriter.ALIGN_CENTER, tablewriter.ALIGN_LEFT})
+	tb.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
+	tb.SetColumnAlignment([]int{tablewriter.ALIGN_DEFAULT, tablewriter.ALIGN_LEFT, tablewriter.ALIGN_LEFT, tablewriter.ALIGN_LEFT})
 	tb.AppendBulk([][]string{
-		[]string{"appid", fmt.Sprint(c.appID), "", "百度 PCS 应用ID"},
-		[]string{"enable_https", fmt.Sprint(c.enableHTTPS), "true", "启用 https"},
-		[]string{"user_agent", c.userAgent, "", "浏览器标识"},
-		[]string{"cache_size", strconv.Itoa(c.cacheSize), "1024 ~ 262144", "下载缓存, 如果硬盘占用高或下载速度慢, 请尝试调大此值"},
-		[]string{"max_parallel", strconv.Itoa(c.maxParallel), "50 ~ 500", "下载最大并发量"},
-		[]string{"savedir", c.saveDir, "", "下载文件的储存目录"},
+		[]string{"appid", fmt.Sprint(c.AppID), "", "百度 PCS 应用ID"},
+		[]string{"cache_size", converter.ConvertFileSize(int64(c.CacheSize), 2), "1KB ~ 256KB", "下载缓存, 如果硬盘占用高或下载速度慢, 请尝试调大此值"},
+		[]string{"max_parallel", strconv.Itoa(c.MaxParallel), "50 ~ 500", "下载最大并发量"},
+		[]string{"max_upload_parallel", strconv.Itoa(c.MaxUploadParallel), "1 ~ 100", "上传最大并发量"},
+		[]string{"max_download_load", strconv.Itoa(c.MaxDownloadLoad), "1 ~ 5", "同时进行下载文件的最大数量"},
+		[]string{"max_download_rate", showMaxRate(c.MaxDownloadRate), "", "限制最大下载速度, 0代表不限制"},
+		[]string{"max_upload_rate", showMaxRate(c.MaxUploadRate), "", "限制最大上传速度, 0代表不限制"},
+		[]string{"savedir", c.SaveDir, "", "下载文件的储存目录"},
+		[]string{"enable_https", fmt.Sprint(c.EnableHTTPS), "true", "启用 https"},
+		[]string{"user_agent", c.UserAgent, requester.DefaultUserAgent, "浏览器标识"},
+		[]string{"pcs_ua", c.PCSUA, "", "PCS 浏览器标识"},
+		[]string{"pan_ua", c.PanUA, baidupcs.NetdiskUA, "Pan 浏览器标识"},
+		[]string{"proxy", c.Proxy, "", "设置代理, 支持 http/socks5 代理"},
+		[]string{"local_addrs", c.LocalAddrs, "", "设置本地网卡地址, 多个地址用逗号隔开"},
 	})
 	tb.Render()
 }

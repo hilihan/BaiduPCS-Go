@@ -138,6 +138,9 @@ func DecryptFile(method string, key []byte, filePath string, isGzip bool) (decry
 	decryptedFilePath = strings.TrimSuffix(filePath, ".encrypt")
 	decryptedTmpFilePath := decryptedFilePath + ".decrypted"
 	decryptedTmpFile, err := os.OpenFile(decryptedTmpFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, cipherFileInfo.Mode())
+	if err != nil {
+		return
+	}
 
 	_, err = io.Copy(decryptedTmpFile, plainReader)
 	if err != nil {
@@ -157,7 +160,7 @@ func DecryptFile(method string, key []byte, filePath string, isGzip bool) (decry
 		os.Remove(filePath)
 	}
 
-	if strings.Compare(filePath, decryptedFilePath) != 0 {
+	if filePath != decryptedFilePath {
 		os.Rename(decryptedTmpFilePath, decryptedFilePath)
 	} else {
 		decryptedFilePath = decryptedTmpFilePath
